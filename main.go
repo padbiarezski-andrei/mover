@@ -281,7 +281,7 @@ func updateDB() {
 		}
 
 		log.Println("end total files: ", len(newFilesHashMap))
-		log.Println("end duplicates: ", len(dublicates))
+		log.Println("duplicates: ", len(dublicates))
 		for _, v := range dublicates {
 			log.Println(v)
 		}
