@@ -25,7 +25,8 @@ type moverCfg struct {
 	PathToUnknown string `json:"unknown"`
 }
 
-type fileHash struct {
+// bad name
+type fileNHash struct {
 	FilePath string `json:"file"`
 	Hash     string `json:"hash"`
 }
@@ -34,33 +35,43 @@ var (
 	cfg moverCfg
 
 	pathToCFGFlag string
-	UpdateDBFlag  bool
+	flagUpdateDB  bool
 
 	filesHashMap map[string]string
 )
 
 func loadCfg(file string) {
 	configFile, err := os.Open(file)
-	defer configFile.Close()
+
 	if err != nil {
-		fmt.Println(err.Error())
+		log.Fatal(err)
 	}
+
+	defer func() {
+		if err := configFile.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
+
 	jsonParser := json.NewDecoder(configFile)
-	err = jsonParser.Decode(&cfg)
-	if err != nil {
-		log.Println(err)
+	if err = jsonParser.Decode(&cfg); err != nil {
+		log.Fatal(err)
 	}
 	log.Println("cfg loaded")
 }
 
 func loadDB(file string) {
-	fDB, err := os.Open(cfg.PathToDB)
+	DBFile, err := os.Open(cfg.PathToDB)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
-	defer fDB.Close()
+	defer func() {
+		if err := DBFile.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
 
-	decoder := json.NewDecoder(fDB)
+	decoder := json.NewDecoder(DBFile)
 	for decoder.More() {
 		if err := decoder.Decode(&filesHashMap); err != nil {
 			log.Println(err)
@@ -70,15 +81,18 @@ func loadDB(file string) {
 }
 
 func saveCfg(file string) {
-	fCFG, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0740)
+	configFile, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0740)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
-	defer fCFG.Close()
+	defer func() {
+		if err := configFile.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
 
-	enc := json.NewEncoder(fCFG)
-	err = enc.Encode(&cfg)
-	if err != nil {
+	encoder := json.NewEncoder(configFile)
+	if err = encoder.Encode(&cfg); err != nil {
 		log.Println(err)
 	}
 	log.Println("cfg saved")
@@ -87,9 +101,13 @@ func saveCfg(file string) {
 func saveDB(file string, db map[string]string) {
 	f, err := os.OpenFile(file, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0755)
 	if err != nil {
-		log.Println(err)
+		log.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
 
 	jsonString, err := json.Marshal(db)
 	if err != nil {
@@ -102,17 +120,9 @@ func saveDB(file string, db map[string]string) {
 }
 
 func init() {
-	flag.StringVar(&pathToCFGFlag, "pdb", "Q:\\video\\y-dl\\14\\127___03\\data\\cfg.json", "path to cfg file")
-	flag.BoolVar(&UpdateDBFlag, "u", false, "re-evaluate hashes for all files")
+	flag.StringVar(&pathToCFGFlag, "pdb", "cfg.json", "path to cfg file")
+	flag.BoolVar(&flagUpdateDB, "u", false, "re-evaluate hashes for all files")
 	flag.Parse()
-	// flag.Visit(func(f *flag.Flag) {
-	// 	if f.Name == "u" {
-	// 		fmt.Println("updatting")
-	// 		// run update
-	// 		return
-	// 	}
-	// })
-	// fmt.Println("processe data")
 
 	//load cfg
 	loadCfg(pathToCFGFlag)
@@ -122,11 +132,10 @@ func init() {
 	loadDB(cfg.PathToDB)
 }
 
-func getFileProducerCh(files []string) <-chan string {
+func createFilePathProducerCh(files []string) <-chan string {
 	out := make(chan string, runtime.NumCPU())
 	go func() {
 		for _, file := range files {
-			//	fmt.Println(file)
 			out <- file
 		}
 		close(out)
@@ -135,10 +144,10 @@ func getFileProducerCh(files []string) <-chan string {
 	return out
 }
 
-func getHashCalculatorCh(fileIn <-chan string, totalFiles int) <-chan fileHash {
-	out := make(chan fileHash, runtime.NumCPU())
+func createHashCalculatorCh(fileIn <-chan string, totalFiles int) <-chan fileNHash {
+	out := make(chan fileNHash, runtime.NumCPU())
 
-	if totalFiles > runtime.NumCPU() {
+	if totalFiles > runtime.NumCPU() || totalFiles <= 0 {
 		totalFiles = runtime.NumCPU()
 	}
 
@@ -160,9 +169,12 @@ func getHashCalculatorCh(fileIn <-chan string, totalFiles int) <-chan fileHash {
 						log.Println(err)
 					}
 
-					f.Close()
+					err = f.Close()
+					if err != nil {
+						log.Println(err)
+					}
 
-					out <- fileHash{file, fmt.Sprintf("%x", h.Sum(nil))}
+					out <- fileNHash{file, fmt.Sprintf("%x", h.Sum(nil))}
 				}
 				wg.Done()
 			}(&wg)
@@ -177,39 +189,43 @@ func getHashCalculatorCh(fileIn <-chan string, totalFiles int) <-chan fileHash {
 func moveFile(sourcePath, destPath string) error {
 	inputFile, err := os.Open(sourcePath)
 	if err != nil {
-		return fmt.Errorf("Couldn't open source file: %s", err)
+		return fmt.Errorf("couldn't open source file: %s", err)
 	}
 	outputFile, err := os.Create(destPath)
 	if err != nil {
 		inputFile.Close()
-		return fmt.Errorf("Couldn't open dest file: %s", err)
+		return fmt.Errorf("couldn't open dest file: %s", err)
 	}
-	defer outputFile.Close()
+	defer func() {
+		if err := outputFile.Close(); err != nil {
+			log.Println(err)
+		}
+	}()
+
 	_, err = io.Copy(outputFile, inputFile)
 	inputFile.Close()
 	if err != nil {
-		return fmt.Errorf("Writing to output file failed: %s", err)
+		return fmt.Errorf("writing to output file failed: %s", err)
 	}
 	// The copy was successful, so now delete the original file
-	err = os.Remove(sourcePath)
-	if err != nil {
-		return fmt.Errorf("Failed removing original file: %s", err)
+	if err = os.Remove(sourcePath); err != nil {
+		return fmt.Errorf("failed removing original file: %s", err)
 	}
 	return nil
 }
 
 func moveFiles() {
-	countOfJobs := len(flag.Args())
-	fileProducerCh := getFileProducerCh(flag.Args())
-	fileNHashCh := getHashCalculatorCh(fileProducerCh, countOfJobs)
+	totalFiles := len(flag.Args())
+	fileProducerCh := createFilePathProducerCh(flag.Args())
+	fileNHashCh := createHashCalculatorCh(fileProducerCh, totalFiles)
 
-	for file := range fileNHashCh {
-		if _, ok := filesHashMap[file.Hash]; ok { //exist
-			log.Printf("duplicate! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
+	for fileNHash := range fileNHashCh {
+		if _, ok := filesHashMap[fileNHash.Hash]; ok { //exist
+			log.Printf("duplicate! [%s] | [%s]", filesHashMap[fileNHash.Hash], fileNHash.FilePath)
 		} else { //don't exist
 			newPath := ""
 
-			switch filepath.Ext(file.FilePath) {
+			switch filepath.Ext(fileNHash.FilePath) {
 			case ".jpg", ".png":
 				newPath = cfg.PathToImages
 			case ".flac", ".mp3":
@@ -218,59 +234,58 @@ func moveFiles() {
 				newPath = cfg.PathToVideos
 			default:
 				newPath = cfg.PathToUnknown
-				log.Printf("unknown extention [%s] | [%s]", filepath.Ext(filepath.Base(file.FilePath)), file.FilePath)
+				log.Printf("unknown extention [%s] | [%s]", filepath.Ext(fileNHash.FilePath), fileNHash.FilePath)
 			}
-			newPath = filepath.Join(newPath, filepath.Base(file.FilePath))
+			newPath = filepath.Join(newPath, filepath.Base(fileNHash.FilePath))
 
-			err := moveFile(file.FilePath, newPath)
-			if err != nil {
+			if err := moveFile(fileNHash.FilePath, newPath); err != nil {
 				log.Println(err)
 				continue
 			}
 
-			filesHashMap[file.Hash] = newPath
-			log.Printf("moved [%s]", file.FilePath)
+			filesHashMap[fileNHash.Hash] = newPath
+			log.Printf("moved [%s]", fileNHash.FilePath)
 		}
 	}
 }
 
 func main() {
-	if UpdateDBFlag {
+	if flagUpdateDB {
 
 		fileProducerCh := make(chan string, runtime.NumCPU())
-		fileNHashCh := getHashCalculatorCh(fileProducerCh, runtime.NumCPU())
+		fileNHashCh := createHashCalculatorCh(fileProducerCh, runtime.NumCPU())
 
 		var wg sync.WaitGroup
 		wg.Add(1)
-		go func(fileHashCh <-chan fileHash, wg *sync.WaitGroup) {
+		go func(fileHashCh <-chan fileNHash, wg *sync.WaitGroup) {
 			// old     filesHashMap
 			newFilesHashMap := make(map[string]string)
-			dublicatesFilesHashMap := make(map[string]string)
-			notPresentInOldFilesHashMap := make(map[string]string)
+			dublicates := make(map[string]string)
+			notPresentInOldMap := make(map[string]string)
 
 			for file := range fileHashCh {
 				if _, ok := newFilesHashMap[file.Hash]; ok { //exist in new
 					log.Printf("duplicate! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
-					dublicatesFilesHashMap[file.Hash] = file.FilePath
+					dublicates[file.Hash] = file.FilePath
 					continue
 				}
 				if _, ok := filesHashMap[file.Hash]; !ok { //not exist in old
 					log.Printf("not present in old DB! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
-					notPresentInOldFilesHashMap[file.Hash] = file.FilePath
+					notPresentInOldMap[file.Hash] = file.FilePath
 				}
 
 				newFilesHashMap[file.Hash] = file.FilePath
 			}
 
 			log.Println("end total files: ", len(newFilesHashMap))
-			log.Println("end duplicates: ", len(dublicatesFilesHashMap))
-			for _, v := range dublicatesFilesHashMap {
+			log.Println("end duplicates: ", len(dublicates))
+			for _, v := range dublicates {
 				log.Println(v)
 			}
 			filesHashMap = newFilesHashMap
 			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), time.Now().Format("2006.01.02.15.04.05")+filepath.Base(cfg.PathToDB)), filesHashMap)
-			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "dublicated"+filepath.Base(cfg.PathToDB)), dublicatesFilesHashMap)
-			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "notPresentInOldFilesHashMap"+filepath.Base(cfg.PathToDB)), notPresentInOldFilesHashMap)
+			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "dublicated"+filepath.Base(cfg.PathToDB)), dublicates)
+			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "notPresentInOldFilesHashMap"+filepath.Base(cfg.PathToDB)), notPresentInOldMap)
 			// err := os.Rename(cfg.PathToDB, newPath)
 			// if err != nil {
 			// 	log.Println(err)
@@ -283,10 +298,8 @@ func main() {
 		err := filepath.WalkDir(cfg.PathToVideos, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				log.Println(err)
-			}
-			if !d.IsDir() {
+			} else if !d.IsDir() {
 				fileProducerCh <- path
-				//fmt.Println(path, d.Name(), d.IsDir())
 			}
 			return err
 		})
@@ -300,7 +313,6 @@ func main() {
 		moveFiles()
 		//save cfg
 		saveCfg(cfg.PathToCFG)
-
 		//save db
 		saveDB(cfg.PathToDB, filesHashMap)
 	}
