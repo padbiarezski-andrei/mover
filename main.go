@@ -187,6 +187,11 @@ func createHashCalculatorCh(fileIn <-chan string, totalFiles int) <-chan fileNHa
 }
 
 func moveFile(sourcePath, destPath string) error {
+	// err := os.Rename(sourcePath, destPath)
+	// if err != nil {
+	// 	log.Println(err)
+	// }
+
 	inputFile, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("couldn't open source file: %s", err)
@@ -249,66 +254,66 @@ func moveFiles() {
 	}
 }
 
-func main() {
-	if flagUpdateDB {
+func updateDB() {
+	fileProducerCh := make(chan string, runtime.NumCPU())
+	fileNHashCh := createHashCalculatorCh(fileProducerCh, runtime.NumCPU())
 
-		fileProducerCh := make(chan string, runtime.NumCPU())
-		fileNHashCh := createHashCalculatorCh(fileProducerCh, runtime.NumCPU())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func(fileHashCh <-chan fileNHash, wg *sync.WaitGroup) {
+		// old     filesHashMap
+		newFilesHashMap := make(map[string]string)
+		dublicates := make(map[string]string)
+		notPresentInOldMap := make(map[string]string)
 
-		var wg sync.WaitGroup
-		wg.Add(1)
-		go func(fileHashCh <-chan fileNHash, wg *sync.WaitGroup) {
-			// old     filesHashMap
-			newFilesHashMap := make(map[string]string)
-			dublicates := make(map[string]string)
-			notPresentInOldMap := make(map[string]string)
-
-			for file := range fileHashCh {
-				if _, ok := newFilesHashMap[file.Hash]; ok { //exist in new
-					log.Printf("duplicate! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
-					dublicates[file.Hash] = file.FilePath
-					continue
-				}
-				if _, ok := filesHashMap[file.Hash]; !ok { //not exist in old
-					log.Printf("not present in old DB! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
-					notPresentInOldMap[file.Hash] = file.FilePath
-				}
-
-				newFilesHashMap[file.Hash] = file.FilePath
+		for file := range fileHashCh {
+			if _, ok := newFilesHashMap[file.Hash]; ok { //exist in new
+				log.Printf("duplicate! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
+				dublicates[file.Hash] = file.FilePath
+				continue
+			}
+			if _, ok := filesHashMap[file.Hash]; !ok { //not exist in old
+				log.Printf("not present in old DB! [%s] | [%s]", filesHashMap[file.Hash], file.FilePath)
+				notPresentInOldMap[file.Hash] = file.FilePath
 			}
 
-			log.Println("end total files: ", len(newFilesHashMap))
-			log.Println("end duplicates: ", len(dublicates))
-			for _, v := range dublicates {
-				log.Println(v)
-			}
-			filesHashMap = newFilesHashMap
-			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), time.Now().Format("2006.01.02.15.04.05")+filepath.Base(cfg.PathToDB)), filesHashMap)
-			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "dublicated"+filepath.Base(cfg.PathToDB)), dublicates)
-			saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "notPresentInOldFilesHashMap"+filepath.Base(cfg.PathToDB)), notPresentInOldMap)
-			// err := os.Rename(cfg.PathToDB, newPath)
-			// if err != nil {
-			// 	log.Println(err)
-			// }
+			newFilesHashMap[file.Hash] = file.FilePath
+		}
 
-			wg.Done()
-		}(fileNHashCh, &wg)
+		log.Println("end total files: ", len(newFilesHashMap))
+		log.Println("end duplicates: ", len(dublicates))
+		for _, v := range dublicates {
+			log.Println(v)
+		}
+		filesHashMap = newFilesHashMap
+		saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), time.Now().Format("2006.01.02.15.04.05")+filepath.Base(cfg.PathToDB)), filesHashMap)
+		saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "dublicated"+filepath.Base(cfg.PathToDB)), dublicates)
+		saveDB(filepath.Join(filepath.Dir(cfg.PathToDB), "notPresentInOldFilesHashMap"+filepath.Base(cfg.PathToDB)), notPresentInOldMap)
 
-		//PATH TO ?
-		err := filepath.WalkDir(cfg.PathToVideos, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				log.Println(err)
-			} else if !d.IsDir() {
-				fileProducerCh <- path
-			}
-			return err
-		})
+		wg.Done()
+	}(fileNHashCh, &wg)
 
-		close(fileProducerCh)
+	//PATH TO ?
+	err := filepath.WalkDir(cfg.PathToVideos, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			log.Println(err)
+		} else if !d.IsDir() {
+			fileProducerCh <- path
 		}
-		wg.Wait()
+		return err
+	})
+
+	close(fileProducerCh)
+	if err != nil {
+		log.Println(err)
+	}
+	wg.Wait()
+
+}
+
+func main() {
+	if flagUpdateDB {
+		updateDB()
 	} else {
 		moveFiles()
 		//save cfg
